@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: transparent;
+        font-family: sans-serif;
+      }
+
+      #board {
+        width: min(460px, 96vw);
+        aspect-ratio: 1 / 1;
+        display: grid;
+        grid-template-columns: repeat(8, 1fr);
+        grid-template-rows: repeat(8, 1fr);
+        border: 2px solid #3b3b3b;
+        box-sizing: border-box;
+        user-select: none;
+      }
+
+      .square {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .light {
+        background: #f0d9b5;
+      }
+
+      .dark {
+        background: #b58863;
+      }
+
+      .piece {
+        width: 88%;
+        height: 88%;
+        object-fit: contain;
+        cursor: grab;
+        -webkit-user-drag: element;
+        z-index: 1;
+      }
+
+      .piece:active {
+        cursor: grabbing;
+      }
+
+      .disabled .piece {
+        cursor: default;
+      }
+
+      .drag-over {
+        outline: 3px solid rgba(49, 130, 206, 0.75);
+        outline-offset: -3px;
+      }
+
+      .coord {
+        position: absolute;
+        z-index: 2;
+        color: #1f2937;
+        font-size: clamp(10px, 2.3vw, 13px);
+        font-weight: 700;
+        line-height: 1;
+        pointer-events: none;
+        text-shadow:
+          -1px -1px 0 rgba(255, 255, 255, 0.8),
+          1px -1px 0 rgba(255, 255, 255, 0.8),
+          -1px 1px 0 rgba(255, 255, 255, 0.8),
+          1px 1px 0 rgba(255, 255, 255, 0.8);
+      }
+
+      .rank-label {
+        top: 4px;
+        left: 4px;
+      }
+
+      .file-label {
+        right: 4px;
+        bottom: 4px;
+      }
+
+      #message {
+        min-height: 22px;
+        color: #b42318;
+        font-size: 0.9rem;
+        padding-top: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="board"></div>
+    <div id="message"></div>
+    <script>
+      let disabled = false;
+      let orientation = "white";
+      const files = ["a", "b", "c", "d", "e", "f", "g", "h"];
+      const pieceImages = {
+        wP: "img/white-pawn.png",
+        wR: "img/white-rook.png",
+        wN: "img/white-knight.png",
+        wB: "img/white-bishop.png",
+        wQ: "img/white-queen.png",
+        wK: "img/white-king.png",
+        bP: "img/black-pawn.png",
+        bR: "img/black-rook.png",
+        bN: "img/black-knight.png",
+        bB: "img/black-bishop.png",
+        bQ: "img/black-queen.png",
+        bK: "img/black-king.png",
+      };
+
+      function pieceTheme(piece) {
+        return pieceImages[piece];
+      }
+
+      function sendMessage(type, data) {
+        window.parent.postMessage(
+          Object.assign({ isStreamlitMessage: true, type: type }, data),
+          "*"
+        );
+      }
+
+      function setFrameHeight(height) {
+        sendMessage("streamlit:setFrameHeight", { height: height || 500 });
+      }
+
+      function setComponentValue(value) {
+        sendMessage("streamlit:setComponentValue", { value: value });
+      }
+
+      function squareName(fileIndex, rankIndexFromWhite) {
+        return files[fileIndex] + String(rankIndexFromWhite + 1);
+      }
+
+      function visibleSquares() {
+        const squares = [];
+        const ranks = orientation === "white" ? [7, 6, 5, 4, 3, 2, 1, 0] : [0, 1, 2, 3, 4, 5, 6, 7];
+        const fileOrder = orientation === "white" ? [0, 1, 2, 3, 4, 5, 6, 7] : [7, 6, 5, 4, 3, 2, 1, 0];
+
+        for (const rankIndex of ranks) {
+          for (const fileIndex of fileOrder) {
+            squares.push(squareName(fileIndex, rankIndex));
+          }
+        }
+        return squares;
+      }
+
+      function parseFenPieces(fen) {
+        const placement = (fen || "8/8/8/8/8/8/8/8").split(" ")[0];
+        const ranks = placement.split("/");
+        const pieces = {};
+        const fenToPiece = {
+          p: "bP",
+          r: "bR",
+          n: "bN",
+          b: "bB",
+          q: "bQ",
+          k: "bK",
+          P: "wP",
+          R: "wR",
+          N: "wN",
+          B: "wB",
+          Q: "wQ",
+          K: "wK",
+        };
+
+        ranks.forEach(function (rankText, rankFromTop) {
+          let fileIndex = 0;
+          const rankIndexFromWhite = 7 - rankFromTop;
+          for (const char of rankText) {
+            if (/\d/.test(char)) {
+              fileIndex += Number(char);
+            } else {
+              pieces[squareName(fileIndex, rankIndexFromWhite)] = fenToPiece[char];
+              fileIndex += 1;
+            }
+          }
+        });
+        return pieces;
+      }
+
+      function promotionSuffix(piece, target) {
+        if (piece === "wP" && target[1] === "8") {
+          return "q";
+        }
+        if (piece === "bP" && target[1] === "1") {
+          return "q";
+        }
+        return "";
+      }
+
+      function createPiece(piece, square) {
+        const img = document.createElement("img");
+        img.className = "piece";
+        img.src = pieceTheme(piece);
+        img.alt = piece;
+        img.draggable = !disabled && piece[0] === "w";
+        img.addEventListener("dragstart", function (event) {
+          if (disabled || piece[0] !== "w") {
+            event.preventDefault();
+            return;
+          }
+          event.dataTransfer.setData("text/plain", JSON.stringify({ source: square, piece: piece }));
+          event.dataTransfer.effectAllowed = "move";
+        });
+        return img;
+      }
+
+      function createSquare(square, piece) {
+        const fileIndex = files.indexOf(square[0]);
+        const rankIndex = Number(square[1]) - 1;
+        const el = document.createElement("div");
+        el.className = "square " + ((fileIndex + rankIndex) % 2 === 0 ? "dark" : "light");
+        el.dataset.square = square;
+
+        if (square[0] === "a") {
+          const rankLabel = document.createElement("span");
+          rankLabel.className = "coord rank-label";
+          rankLabel.textContent = square[1];
+          el.appendChild(rankLabel);
+        }
+
+        if (square[1] === "1") {
+          const fileLabel = document.createElement("span");
+          fileLabel.className = "coord file-label";
+          fileLabel.textContent = square[0];
+          el.appendChild(fileLabel);
+        }
+
+        el.addEventListener("dragover", function (event) {
+          if (disabled) {
+            return;
+          }
+          event.preventDefault();
+          el.classList.add("drag-over");
+        });
+        el.addEventListener("dragleave", function () {
+          el.classList.remove("drag-over");
+        });
+        el.addEventListener("drop", function (event) {
+          event.preventDefault();
+          el.classList.remove("drag-over");
+          if (disabled) {
+            return;
+          }
+
+          const data = JSON.parse(event.dataTransfer.getData("text/plain") || "{}");
+          if (!data.source || data.source === square) {
+            return;
+          }
+          const move = data.source + square + promotionSuffix(data.piece, square);
+          setComponentValue({
+            move: move,
+            event_id: Date.now().toString() + "-" + move,
+          });
+        });
+
+        if (piece) {
+          el.appendChild(createPiece(piece, square));
+        }
+        return el;
+      }
+
+      function render(args) {
+        disabled = Boolean(args.disabled);
+        orientation = args.orientation || "white";
+        const board = document.getElementById("board");
+        const message = document.getElementById("message");
+        const pieces = parseFenPieces(args.fen);
+
+        board.className = disabled ? "disabled" : "";
+        board.innerHTML = "";
+        visibleSquares().forEach(function (square) {
+          board.appendChild(createSquare(square, pieces[square]));
+        });
+        message.textContent = disabled ? "Drag input is unavailable for this position." : "";
+        setFrameHeight(500);
+      }
+
+      window.addEventListener("message", function (event) {
+        if (event.data.type !== "streamlit:render") {
+          return;
+        }
+        render(event.data.args || {});
+      });
+
+      sendMessage("streamlit:componentReady", { apiVersion: 1 });
+      setFrameHeight(500);
+    </script>
+  </body>
+</html>

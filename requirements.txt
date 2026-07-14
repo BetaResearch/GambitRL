@@ -1,0 +1,6 @@
+python-chess>=1.999
+torch>=2.0.0
+streamlit>=1.30.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+

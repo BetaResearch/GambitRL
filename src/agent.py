@@ -97,9 +97,9 @@ class DQNAgent:
     def __init__(
         self,
         color: chess.Color = chess.BLACK,
-        gamma: float = 0.99,
-        lr: float = 3e-4,
-        batch_size: int = 256,
+        gamma: float = 0.97,
+        lr: float = 5e-5,
+        batch_size: int = 1024,
         memory_size: int = 100_000,
         use_double_dqn: bool = True,
         use_per: bool = False,
@@ -107,7 +107,9 @@ class DQNAgent:
         per_beta: float = 0.4,
         per_epsilon: float = 1e-5,
         tau: float = 0.005,
-        train_every: int = 4,
+        train_every: int = 8,
+        reward_scale: float = 0.01,
+        max_q: float = 25.0,
         device: str | None = None,
     ):
         self.color = color
@@ -117,8 +119,16 @@ class DQNAgent:
         self.use_per = use_per
         self.tau = tau
         self.train_every = train_every
+        self.reward_scale = reward_scale
+        self.max_q = max_q
         self._step_count = 0
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        if device is not None:
+            # Explicit device: use it directly without touching CUDA, so callers
+            # like the Streamlit UI can avoid CUDA-context init (which segfaults
+            # inside Streamlit's worker threads on Windows).
+            self.device = torch.device(device)
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         # New CNN-based model
         self.policy_net = DQN().to(self.device)
@@ -243,37 +253,51 @@ class DQNAgent:
         with torch.no_grad():
             policy_next_q = self.policy_net(next_states)
             target_next_q = self.target_net(next_states)
-            next_q = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
 
+            # Build (batch, MOVE_PLANES) legal-action mask on GPU.
+            # Done states get an all-False mask so target_next_q.max() returns
+            # -inf for them; the dones factor zeros them out in target_q.
+            output_dim = target_next_q.shape[1]
+            legal_mask = torch.zeros(self.batch_size, output_dim, dtype=torch.bool, device=self.device)
+            active_rows = []
+            active_indices = []
             for row, transition in enumerate(transitions):
                 if transition.done:
                     continue
-
-                # Legal-action masking keeps impossible chess moves out of the
-                # target. Older transitions may not have this field, so they
-                # fall back to the full action space for compatibility.
                 legal_actions = transition.next_legal_actions
                 if legal_actions is None:
-                    legal_actions = list(range(target_next_q.shape[1]))
-                if not legal_actions:
-                    continue
+                    legal_mask[row] = True
+                elif legal_actions:
+                    active_rows.append(row)
+                    active_indices.extend([(row, a) for a in legal_actions])
+            if active_rows:
+                rows_t = torch.tensor([r for r, _ in active_indices], dtype=torch.long, device=self.device)
+                cols_t = torch.tensor([a for _, a in active_indices], dtype=torch.long, device=self.device)
+                legal_mask[rows_t, cols_t] = True
 
-                legal_tensor = torch.tensor(legal_actions, dtype=torch.long, device=self.device)
-                if self.use_double_dqn:
-                    best_legal_index = policy_next_q[row, legal_tensor].argmax()
-                    best_action = legal_tensor[best_legal_index]
-                    next_q[row] = target_next_q[row, best_action]
-                else:
-                    next_q[row] = target_next_q[row, legal_tensor].max()
+            # Mask illegal actions with -inf before reducing.
+            masked_policy = policy_next_q.masked_fill(~legal_mask, float("-inf"))
+            if self.use_double_dqn:
+                best_actions = masked_policy.argmax(dim=1)
+                next_q = target_next_q.gather(1, best_actions.unsqueeze(1)).squeeze(1)
+            else:
+                next_q = target_next_q.masked_fill(~legal_mask, float("-inf")).max(dim=1).values
 
-            target_q = rewards + self.gamma * next_q * (~dones).float()
+            # Clip next-state Q to keep the bootstrap target bounded and prevent
+            # the runaway Q growth seen in early runs (avg_q exploded to ~-24).
+            next_q = next_q.clamp(-self.max_q, self.max_q)
+
+            # Scale rewards down so the ±100 terminal signal and shaped rewards
+            # (captures, checks, …) stay in a range the network can fit without
+            # large gradients.
+            target_q = self.reward_scale * rewards + self.gamma * next_q * (~dones).float()
 
         td_errors = target_q - current_q
         per_sample_loss = self.loss_fn(current_q, target_q)
         loss = (per_sample_loss * weights).mean()
         self.optimizer.zero_grad()
         loss.backward()
-        nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=5.0)
+        nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=1.0)
         self.optimizer.step()
         self.scheduler.step()
 

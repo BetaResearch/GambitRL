@@ -19,7 +19,7 @@ def init_state() -> None:
     if "env" not in st.session_state:
         st.session_state.env = ChessEnvironment(bot_color=chess.BLACK)
     if "agent" not in st.session_state:
-        agent = DQNAgent(color=chess.BLACK)
+        agent = DQNAgent(color=chess.BLACK, device="cpu")
         st.session_state.model_loaded = agent.load(DEFAULT_MODEL_PATH)
         st.session_state.agent = agent
     if "last_bot_move" not in st.session_state:

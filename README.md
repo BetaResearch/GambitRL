@@ -56,6 +56,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+`requirements.txt` pins the CUDA 12.4 PyTorch wheel (`torch==2.6.0+cu124`) so training can use NVIDIA VRAM. If you do not have an NVIDIA GPU, replace it with the CPU wheel from PyPI before installing.
+
 On macOS or Linux, activate with:
 
 ```bash
@@ -89,6 +91,8 @@ The checkpoint is saved to `models/chessbot_dqn.pt`. Plots are saved to `results
 ```bash
 streamlit run app.py
 ```
+
+The app runs in headless mode (see `.streamlit/config.toml`) so it will not auto-open a browser — this avoids a native crash on Windows when Streamlit's browser auto-launch interacts with the CUDA-enabled torch wheel. Open the printed `Local URL` (e.g. `http://localhost:8501`) manually in your browser.
 
 The human plays White and enters moves in UCI format:
 

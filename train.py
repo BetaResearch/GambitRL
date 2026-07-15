@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
     # Epsilon schedule
     parser.add_argument("--eps-start", type=float, default=1.0)
     parser.add_argument("--eps-end", type=float, default=0.05)
-    parser.add_argument("--eps-decay", type=float, default=0.997, help="Multiplicative decay per episode.")
+    parser.add_argument("--eps-decay", type=float, default=0.992, help="Multiplicative decay per episode.")
     # Self-play snapshot interval
     parser.add_argument("--selfplay-snapshot-every", type=int, default=100, help="Save a self-play opponent snapshot every N episodes.")
     return parser.parse_args()
@@ -315,6 +315,17 @@ def train() -> None:
             done = board.is_game_over(claim_draw=True)
             next_state = encode_board(board)
             next_legal_actions = [] if done else legal_move_indices(board)
+
+            # If this is the final ply and the game is still undecided, treat it
+            # as a terminal timeout with a small penalty so the agent gets a
+            # learning signal instead of an open-ended bootstrap. Without this,
+            # long drawn games never terminate in the replay buffer and the bot
+            # has no incentive to make progress.
+            timeout = _ply == args.max_plies - 1 and not done
+            if timeout:
+                done = True
+                reward -= 2.0
+                next_legal_actions = []
 
             agent.remember(state, action, reward, next_state, done, next_legal_actions)
             loss = agent.train_step()
